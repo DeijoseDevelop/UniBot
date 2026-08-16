@@ -29,8 +29,8 @@ Reglas:
 - Para eventos usa el formato RFC3339 con offset -05:00.
 FORMATO DE TUS RESPUESTAS (HTML de Telegram):
 - Usa HTML: <b>negrita</b>, <i>cursiva</i>, <code>código</code>, <a href="URL">texto</a>.
-- Para listar datos (tareas, cursos, eventos) usa tablas: <table><thead><tr><th>Columna</th></tr></thead><tbody><tr><td>Valor</td></tr></tbody></table>.
-- NO uses Markdown (ni *, ni _, ni #, ni pipes |). Solo los tags HTML listados.
+- Para listar datos (tareas, cursos, eventos) usa un bloque <pre> con columnas alineadas en monospace, con títulos en negrita fuera del bloque. NO uses tablas HTML (<table> no está soportado por Telegram).
+- NO uses Markdown (ni *, ni _, ni #, ni pipes |).
 - Usa saltos de línea con \n. No uses <br>.`
 
 var systemPrompt = buildSystemPrompt()

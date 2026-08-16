@@ -10,13 +10,29 @@ import (
 	"github.com/go-telegram/bot/models"
 )
 
-// tags permitidos por Telegram en HTML (incluye tablas desde Bot API 7.0).
-var allowedTagRe = regexp.MustCompile(`(?i)</?(?:b|strong|i|em|u|ins|s|strike|del|code|pre|a|span|blockquote|tg-spoiler|table|thead|tbody|tr|th|td)(?:\s[^>]*)?/?>`)
+// tags permitidos por Telegram en parse_mode HTML (según docs oficiales:
+// b/strong, i/em, u/ins, s/strike/del, a, code, pre, blockquote, tg-spoiler,
+// tg-emoji, tg-time. Las tablas <table> NO están soportadas en sendMessage).
+var allowedTagRe = regexp.MustCompile(`(?i)</?(?:b|strong|i|em|u|ins|s|strike|del|a|code|pre|blockquote|tg-spoiler)(?:\s[^>]*)?/?>`)
 
-// sanitizeHTML escapa los caracteres reservados de Telegram (<, >, &) fuera de
-// los tags HTML permitidos, de modo que el HTML generado por el LLM no rompa
-// el parseo de Telegram.
+// tags HTML no soportados por Telegram: se eliminan conservando su contenido.
+var disallowedTagRe = regexp.MustCompile(`(?i)</?(?:table|thead|tbody|tr|th|td|span|div|ul|ol|li|img|figure|figcaption|video|script|style|h[1-6])(?:\s[^>]*)?/?>`)
+
+var tdCloseRe = regexp.MustCompile(`(?i)</(td|th)>`)
+var trCloseRe = regexp.MustCompile(`(?i)</(tr|thead|tbody|table)>`)
+var blockCloseRe = regexp.MustCompile(`(?i)</(p|div|li|ul|ol|h[1-6])>|(?i)<br\s*/?>`)
+
+// sanitizeHTML convierte el HTML del LLM en HTML válido para Telegram:
+// las tablas no soportadas se transforman en texto con pipes y saltos de
+// línea, los tags no permitidos se eliminan, y los caracteres reservados
+// (<, >, &) fuera de los tags permitidos se escapan.
 func sanitizeHTML(text string) string {
+	// Tablas no soportadas → texto legible
+	text = tdCloseRe.ReplaceAllString(text, " | ")
+	text = trCloseRe.ReplaceAllString(text, "\n")
+	text = blockCloseRe.ReplaceAllString(text, "\n")
+	text = disallowedTagRe.ReplaceAllString(text, "")
+
 	placeholders := []string{}
 	repl := func(m string) string {
 		placeholders = append(placeholders, m)
