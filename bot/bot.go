@@ -252,8 +252,8 @@ func (b *Bot) CompleteAuth(ctx context.Context, state, code string) (int64, erro
 		return 0, errors.New("TokenStore no disponible")
 	}
 
-	ts := googleauth.NewAutoRefreshTokenSource(userID, config.Cfg.GoogleClientID, config.Cfg.GoogleClientSecret, b.tokenStore)
-	tok, err := ts.Exchange(ctx, code)
+	cfg := googleauth.NewOAuthConfig(config.Cfg.GoogleClientID, config.Cfg.GoogleClientSecret, b.redirectURL)
+	tok, err := cfg.Exchange(ctx, code)
 	if err != nil {
 		return 0, err
 	}

@@ -71,19 +71,6 @@ func (a *AutoRefreshTokenSource) AuthURL(state string) string {
 	return a.config.AuthCodeURL(state, oauth2.AccessTypeOffline)
 }
 
-// Exchange intercambia el código de autorización por un token y lo persiste.
-func (a *AutoRefreshTokenSource) Exchange(ctx context.Context, code string) (*oauth2.Token, error) {
-	tok, err := a.config.Exchange(ctx, code)
-	if err != nil {
-		return nil, fmt.Errorf("oauth exchange failed: %w", err)
-	}
-	a.currentToken = tok
-	if err := a.store.SaveTokens(ctx, a.userID, tok); err != nil {
-		return nil, fmt.Errorf("save tokens failed: %w", err)
-	}
-	return tok, nil
-}
-
 // Token implementa oauth2.TokenSource
 func (a *AutoRefreshTokenSource) Token() (*oauth2.Token, error) {
 	if a.currentToken == nil {
