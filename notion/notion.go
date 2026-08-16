@@ -182,6 +182,66 @@ func (s *Service) buildProperties(ctx context.Context, databaseID notionapi.Data
 	return props, nil
 }
 
+// NoteRef es una referencia a una nota guardada (para consulta).
+type NoteRef struct {
+	Title   string   `json:"title"`
+	URL     string   `json:"url"`
+	Tags    []string `json:"tags,omitempty"`
+	Content string   `json:"content,omitempty"`
+}
+
+// Search consulta las notas de la base de datos, filtrando por texto en el
+// título. Devuelve hasta limit notas.
+func (s *Service) Search(ctx context.Context, query string, limit int) ([]NoteRef, error) {
+	databaseID, err := s.resolveDatabase(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := s.client.Database.Query(ctx, databaseID, &notionapi.DatabaseQueryRequest{
+		PageSize: limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("notion: consultar base de datos: %w", err)
+	}
+
+	query = strings.ToLower(strings.TrimSpace(query))
+	notes := []NoteRef{}
+	for _, page := range resp.Results {
+		title, content, tags := pageNote(&page)
+		if query != "" && !strings.Contains(strings.ToLower(title), query) {
+			continue
+		}
+		notes = append(notes, NoteRef{Title: title, URL: page.URL, Tags: tags, Content: content})
+	}
+	return notes, nil
+}
+
+// pageNote extrae título, contenido y tags de una página de la base de notas.
+func pageNote(page *notionapi.Page) (title, content string, tags []string) {
+	for _, prop := range page.Properties {
+		switch p := prop.(type) {
+		case *notionapi.TitleProperty:
+			title = richTextPlain(p.Title)
+		case *notionapi.RichTextProperty:
+			content = richTextPlain(p.RichText)
+		case *notionapi.MultiSelectProperty:
+			for _, o := range p.MultiSelect {
+				tags = append(tags, o.Name)
+			}
+		}
+	}
+	return
+}
+
+func richTextPlain(rt []notionapi.RichText) string {
+	var sb strings.Builder
+	for _, r := range rt {
+		sb.WriteString(r.PlainText)
+	}
+	return sb.String()
+}
+
 func richText(text string) notionapi.RichText {
 	return notionapi.RichText{
 		Text: &notionapi.Text{Content: text},
