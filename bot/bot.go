@@ -223,6 +223,13 @@ func (b *Bot) StartPolling(ctx context.Context) {
 	b.bot.Start(ctx)
 }
 
+// StartWebhookMode inicia el dispatcher interno que consume las updates
+// entregadas al webhook. Es obligatorio en modo webhook; sin él, las updates
+// recibidas se descartan (el canal b.updates no tiene consumidor).
+func (b *Bot) StartWebhookMode(ctx context.Context) {
+	b.bot.StartWebhook(ctx)
+}
+
 // SendToUser envía un mensaje directo a un usuario por su ID.
 func (b *Bot) SendToUser(ctx context.Context, userID int64, text string) error {
 	_, err := b.bot.SendMessage(ctx, &bot.SendMessageParams{

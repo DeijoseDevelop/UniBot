@@ -73,6 +73,7 @@ func main() {
 			log.Printf("Warning: failed to set webhook: %v", err)
 		}
 		r.POST("/webhook", gin.WrapF(tgBot.WebhookHandler()))
+		go tgBot.StartWebhookMode(context.Background())
 	} else {
 		log.Println("Running in polling mode (sin WEBHOOK_URL)")
 		go tgBot.StartPolling(context.Background())
