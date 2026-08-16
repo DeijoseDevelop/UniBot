@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"unibot/config"
 	"unibot/executor"
+	"unibot/store"
 	"unibot/tools"
 
 	"github.com/openai/openai-go"
@@ -29,6 +31,7 @@ Reglas:
 - Para consultar notas guardadas usa query_notes (query = texto del título); para el contenido completo de una usa get_note.
 - Si quiere guardar información, usa save_note.
 - Si envía una imagen, usa upload_image.
+- Si pide un resumen de su semana (eventos, tareas y notas), usa get_weekly_summary.
 - Confirma las acciones con detalles específicos.
 - Para días relativos (martes, próximo lunes, etc.) usa la fecha de hoy como referencia.
 - Para eventos usa el formato RFC3339 con offset -05:00.
@@ -49,15 +52,23 @@ func buildSystemPrompt() string {
 	return fmt.Sprintf(systemPromptTemplate, today.Format("2 de January de 2006"))
 }
 
+// ConversationStore define la persistencia del historial de conversación.
+type ConversationStore interface {
+	GetConversation(ctx context.Context, userID int64) ([]store.StoredMessage, error)
+	SaveConversation(ctx context.Context, userID int64, msgs []store.StoredMessage) error
+	DeleteConversation(ctx context.Context, userID int64) error
+}
+
 // Orchestrator maneja la conversación con DeepSeek
 type Orchestrator struct {
 	client   openai.Client
 	exec     *executor.Executor
+	store    ConversationStore
 	messages map[int64][]openai.ChatCompletionMessageParamUnion
 }
 
 // New crea un nuevo orquestador
-func New(exec *executor.Executor) *Orchestrator {
+func New(exec *executor.Executor, conversationStore ConversationStore) *Orchestrator {
 	client := openai.NewClient(
 		option.WithAPIKey(config.Cfg.DeepSeekAPIKey),
 		option.WithBaseURL("https://api.deepseek.com"),
@@ -66,6 +77,7 @@ func New(exec *executor.Executor) *Orchestrator {
 	return &Orchestrator{
 		client:   client,
 		exec:     exec,
+		store:    conversationStore,
 		messages: make(map[int64][]openai.ChatCompletionMessageParamUnion),
 	}
 }
@@ -76,6 +88,13 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, userID int64, message
 	history := o.messages[userID]
 	if len(history) == 0 {
 		history = append(history, openai.SystemMessage(systemPrompt))
+		if o.store != nil {
+			if stored, err := o.store.GetConversation(ctx, userID); err == nil && len(stored) > 0 {
+				for _, m := range stored {
+					history = append(history, fromStored(m))
+				}
+			}
+		}
 	}
 
 	// Construir mensaje del usuario
@@ -110,6 +129,7 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, userID int64, message
 		reply := msg.Content
 		history = append(history, openai.AssistantMessage(reply))
 		o.messages[userID] = history
+		o.persistHistory(ctx, userID, history)
 		return reply, nil
 	}
 
@@ -167,11 +187,103 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, userID int64, message
 		finalHistory = append([]openai.ChatCompletionMessageParamUnion{finalHistory[0]}, finalHistory[len(finalHistory)-20:]...)
 	}
 	o.messages[userID] = finalHistory
+	o.persistHistory(ctx, userID, finalHistory)
 
 	return reply, nil
+}
+
+// persistHistory guarda el historial (sin el system prompt) en el store.
+func (o *Orchestrator) persistHistory(ctx context.Context, userID int64, history []openai.ChatCompletionMessageParamUnion) {
+	if o.store == nil {
+		return
+	}
+	stored := make([]store.StoredMessage, 0, len(history))
+	for _, m := range history {
+		if m.OfSystem != nil {
+			continue
+		}
+		stored = append(stored, toStored(m))
+	}
+	if err := o.store.SaveConversation(ctx, userID, stored); err != nil {
+		log.Printf("Error persisting conversation for user %d: %v", userID, err)
+	}
 }
 
 // ClearHistory limpia el historial de un usuario
 func (o *Orchestrator) ClearHistory(userID int64) {
 	delete(o.messages, userID)
+	if o.store != nil {
+		_ = o.store.DeleteConversation(context.Background(), userID)
+	}
+}
+
+// toStored convierte un mensaje de la API en su representación persistible.
+func toStored(m openai.ChatCompletionMessageParamUnion) store.StoredMessage {
+	sm := store.StoredMessage{}
+	switch {
+	case m.OfUser != nil:
+		sm.Role = "user"
+		sm.Content = contentText(m.OfUser.Content)
+	case m.OfAssistant != nil:
+		sm.Role = "assistant"
+		sm.Content = contentText(m.OfAssistant.Content)
+		for _, tc := range m.OfAssistant.ToolCalls {
+			if raw, err := json.Marshal(tc); err == nil {
+				sm.ToolCalls = append(sm.ToolCalls, raw)
+			}
+		}
+	case m.OfTool != nil:
+		sm.Role = "tool"
+		sm.Content = contentText(m.OfTool.Content)
+		sm.ToolCallID = m.OfTool.ToolCallID
+	case m.OfFunction != nil:
+		sm.Role = "function"
+		sm.Content = m.OfFunction.Content.Value
+	}
+	return sm
+}
+
+// fromStored reconstruye un mensaje de la API desde su representación persistida.
+func fromStored(m store.StoredMessage) openai.ChatCompletionMessageParamUnion {
+	switch m.Role {
+	case "user":
+		return openai.UserMessage(m.Content)
+	case "tool":
+		return openai.ToolMessage(m.Content, m.ToolCallID)
+	case "function":
+		return openai.ChatCompletionMessageParamOfFunction(m.Content, "")
+	case "assistant":
+		if len(m.ToolCalls) == 0 {
+			return openai.AssistantMessage(m.Content)
+		}
+		toolCalls := make([]openai.ChatCompletionMessageToolCallParam, 0, len(m.ToolCalls))
+		for _, raw := range m.ToolCalls {
+			var tc openai.ChatCompletionMessageToolCallParam
+			if err := json.Unmarshal(raw, &tc); err == nil {
+				toolCalls = append(toolCalls, tc)
+			}
+		}
+		return openai.ChatCompletionMessageParamUnion{
+			OfAssistant: &openai.ChatCompletionAssistantMessageParam{
+				Content:   openai.ChatCompletionAssistantMessageParamContentUnion{OfString: openai.String(m.Content)},
+				ToolCalls: toolCalls,
+			},
+		}
+	}
+	return openai.SystemMessage(m.Content)
+}
+
+func contentText(content any) string {
+	switch c := content.(type) {
+	case string:
+		return c
+	case openai.ChatCompletionUserMessageParamContentUnion:
+		return c.OfString.Value
+	case openai.ChatCompletionAssistantMessageParamContentUnion:
+		return c.OfString.Value
+	case openai.ChatCompletionToolMessageParamContentUnion:
+		return c.OfString.Value
+	default:
+		return ""
+	}
 }

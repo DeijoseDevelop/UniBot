@@ -21,16 +21,18 @@ Backend en **Go 1.23+** con binarios ultraligeros (~10-20 MB RAM en idle) y desp
 
 ## ✨ Características
 
-| Capacidad | Tool | Servicio |
+| Capacidad | Tools | Servicio |
 | --- | --- | --- |
-| 📅 Crear eventos de parciales y clases | `create_calendar_event` | Google Calendar |
-| 🎓 Consultar tareas pendientes por curso | `list_classroom_tasks` | Google Classroom |
-| 📝 Guardar notas estructuradas con tags | `save_note` | Notion |
-| 📷 Procesar fotos del pizarrón (OCR) | `upload_image` | Google Drive + Vision |
-| 🧠 Memoria de conversación (20 msgs) | — | Supabase |
-| 📊 Resumen semanal unificado | `get_weekly_summary` *(roadmap)* | Calendar + Classroom + Notion |
+| 📅 Calendario completo (crear/consultar/editar/borrar) | `create_calendar_event`, `list_calendar_events`, `get_calendar_event`, `update_calendar_event`, `delete_calendar_event` | Google Calendar |
+| 🎓 Cursos y tareas con filtros (año, vencidas) | `list_classroom_courses`, `list_classroom_tasks`, `get_classroom_task` | Google Classroom |
+| 📝 Notas (guardar/consultar/detalle) | `save_note`, `query_notes`, `get_note` | Notion |
+| 📷 Imágenes con OCR | `upload_image` | Google Drive + Vision |
+| 📁 Drive (buscar/detalle/contenido) | `search_drive_files`, `get_drive_file` | Google Drive |
+| 📊 Resumen semanal | `get_weekly_summary` | Calendar + Classroom + Notion |
+| 🧠 Memoria de conversación persistente | — | Supabase |
+| 🔔 Recordatorios automáticos | — | Supabase + Telegram |
 
-Formatos de entrada: mensajes de texto, imágenes y notas de voz.
+Formatos de entrada: mensajes de texto, **notas de voz (Whisper)** e imágenes.
 
 ## 🎛️ Comandos del bot
 
@@ -156,11 +158,11 @@ docker compose up -d
 
 | Fase | Alcance |
 | --- | --- |
-| **1. Fundamentos** | Bot + DeepSeek conectado *(en curso)* |
-| **2. Integración Google** | OAuth2 `/auth`, Calendar, Classroom *(en curso)* |
-| **3. Knowledge Base** | Supabase (hecho), Notion `save_note` (hecho), Drive, OCR |
-| **4. Inteligencia Avanzada** | RAG, Whisper, recordatorios automáticos |
-| **5. Producción** | Webhooks, monitoreo, dominio personalizado |
+| **1. Fundamentos** | Bot + DeepSeek conectado ✅ |
+| **2. Integración Google** | OAuth2 `/auth`, Calendar, Classroom ✅ |
+| **3. Knowledge Base** | Supabase, Notion, Drive, OCR ✅ |
+| **4. Inteligencia Avanzada** | RAG, recordatorios automáticos *(Whisper listo, RAG pendiente)* |
+| **5. Producción** | Webhooks, monitoreo, dominio personalizado ✅ |
 
 ## 📄 Licencia
 

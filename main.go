@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"unibot/executor"
 	"unibot/notion"
 	"unibot/orchestrator"
+	"unibot/reminder"
 	"unibot/store"
 
 	"github.com/gin-gonic/gin"
@@ -56,12 +58,19 @@ func main() {
 	notionService := notion.New(config.Cfg.NotionToken, config.Cfg.NotionDBID, config.Cfg.NotionAnchorPageID)
 
 	exec := executor.New(tokenStore, notionService)
-	orch := orchestrator.New(exec)
+	orch := orchestrator.New(exec, tokenStore)
 
 	// Crear bot de Telegram
 	tgBot, err := bot.New(orch, tokenStore)
 	if err != nil {
 		log.Fatalf("Failed to create telegram bot: %v", err)
+	}
+
+	// Recordatorios automáticos de tareas y eventos próximos
+	if config.Cfg.ReminderEnabled && tokenStore != nil {
+		reminderSvc := reminder.New(tokenStore, tgBot)
+		go reminderSvc.Run(context.Background())
+		log.Println("Reminders enabled (each 60 min, ahead " + fmt.Sprint(config.Cfg.ReminderHoursAhead) + "h)")
 	}
 
 	// Modo de operación: webhook (producción) o polling (desarrollo local)

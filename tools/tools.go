@@ -205,6 +205,17 @@ func AllTools() []ToolDefinition {
 		{
 			Type: "function",
 			Function: FunctionSchema{
+				Name:        "get_weekly_summary",
+				Description: "Genera un resumen de los próximos 7 días: eventos del calendario, tareas de Classroom que vencen en la semana y notas recientes de Notion",
+				Parameters: json.RawMessage(`{
+					"type": "object",
+					"properties": {}
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: FunctionSchema{
 				Name:        "save_note",
 				Description: "Guarda una nota en Notion",
 				Parameters: json.RawMessage(`{

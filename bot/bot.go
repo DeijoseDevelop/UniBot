@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"unibot/config"
@@ -16,6 +18,8 @@ import (
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/option"
 
 	"golang.org/x/oauth2"
 )
@@ -27,14 +31,47 @@ type Bot struct {
 	tokenStore   googleauth.TokenStore
 	authStates   map[string]int64
 	redirectURL  string
+	limiter      *rateLimiter
+}
+
+// rateLimiter limita los mensajes por usuario (ventana deslizante de 60 s).
+type rateLimiter struct {
+	mu   sync.Mutex
+	hits map[int64][]time.Time
+}
+
+func (rl *rateLimiter) allow(userID int64) bool {
+	max := config.Cfg.RateLimitMaxPerMinute
+	if max <= 0 {
+		return true
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+
+	now := time.Now()
+	window := now.Add(-60 * time.Second)
+	hits := rl.hits[userID]
+	filtered := hits[:0]
+	for _, t := range hits {
+		if t.After(window) {
+			filtered = append(filtered, t)
+		}
+	}
+	if len(filtered) >= max {
+		rl.hits[userID] = filtered
+		return false
+	}
+	rl.hits[userID] = append(filtered, now)
+	return true
 }
 
 // New crea e inicializa el bot de Telegram
 func New(orch *orchestrator.Orchestrator, tokenStore googleauth.TokenStore) (*Bot, error) {
 	authStates := map[string]int64{}
+	limiter := &rateLimiter{hits: map[int64][]time.Time{}}
 
 	opts := []bot.Option{
-		bot.WithDefaultHandler(defaultHandler(orch)),
+		bot.WithDefaultHandler(defaultHandler(orch, limiter)),
 		bot.WithMessageTextHandler("/start", bot.MatchTypeExact, startHandler()),
 		bot.WithMessageTextHandler("/auth", bot.MatchTypeExact, authHandler(authStates)),
 		bot.WithMessageTextHandler("/revoke", bot.MatchTypeExact, revokeHandler(orch, tokenStore)),
@@ -51,6 +88,7 @@ func New(orch *orchestrator.Orchestrator, tokenStore googleauth.TokenStore) (*Bo
 		tokenStore:   tokenStore,
 		authStates:   authStates,
 		redirectURL:  oauthRedirectURL(),
+		limiter:      limiter,
 	}, nil
 }
 
@@ -88,13 +126,20 @@ Solo escríbeme lo que necesites.`
 	}
 }
 
-func defaultHandler(orch *orchestrator.Orchestrator) bot.HandlerFunc {
+func defaultHandler(orch *orchestrator.Orchestrator, limiter *rateLimiter) bot.HandlerFunc {
 	return func(ctx context.Context, b *bot.Bot, update *models.Update) {
 		if update.Message == nil {
 			return
 		}
 
 		userID := update.Message.From.ID
+
+		// Rate limiting por usuario
+		if !limiter.allow(userID) {
+			sendMessage(ctx, b, update.Message.Chat.ID,
+				"⚠️ Estás enviando mensajes muy rápido. Espera un momento e intenta de nuevo.")
+			return
+		}
 
 		// Indicador de "escribiendo..."
 		b.SendChatAction(ctx, &bot.SendChatActionParams{
@@ -108,9 +153,9 @@ func defaultHandler(orch *orchestrator.Orchestrator) bot.HandlerFunc {
 			return
 		}
 
-		// Notas de voz: placeholder
+		// Notas de voz: transcripción (Whisper) y procesamiento
 		if update.Message.Voice != nil {
-			sendMessage(ctx, b, update.Message.Chat.ID, "🎤 Nota de voz recibida. Transcripción de voz estará disponible próximamente.")
+			handleVoice(ctx, b, orch, update)
 			return
 		}
 
@@ -165,6 +210,49 @@ func handlePhoto(ctx context.Context, b *bot.Bot, orch *orchestrator.Orchestrato
 		reply = "❌ Error procesando la imagen."
 	}
 
+	sendMessage(ctx, b, update.Message.Chat.ID, reply)
+}
+
+func handleVoice(ctx context.Context, b *bot.Bot, orch *orchestrator.Orchestrator, update *models.Update) {
+	userID := update.Message.From.ID
+
+	if config.Cfg.OpenAIAPIKey == "" {
+		sendMessage(ctx, b, update.Message.Chat.ID,
+			"🎤 Nota de voz recibida. La transcripción requiere configurar OPENAI_API_KEY (Whisper).")
+		return
+	}
+
+	file, err := b.GetFile(ctx, &bot.GetFileParams{FileID: update.Message.Voice.FileID})
+	if err != nil {
+		sendMessage(ctx, b, update.Message.Chat.ID, "❌ Error descargando la nota de voz.")
+		return
+	}
+	data, err := downloadFile(ctx, b.FileDownloadLink(file))
+	if err != nil {
+		sendMessage(ctx, b, update.Message.Chat.ID, "❌ Error descargando la nota de voz.")
+		return
+	}
+
+	client := openai.NewClient(option.WithAPIKey(config.Cfg.OpenAIAPIKey))
+	transcription, err := client.Audio.Transcriptions.New(ctx, openai.AudioTranscriptionNewParams{
+		Model:    "whisper-1",
+		File:     bytes.NewReader(data),
+		Language: openai.String("es"),
+	})
+	if err != nil {
+		log.Printf("Error transcribing voice: %v", err)
+		sendMessage(ctx, b, update.Message.Chat.ID, "❌ No pude transcribir la nota de voz. Intenta de nuevo.")
+		return
+	}
+
+	procCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	reply, err := orch.ProcessMessage(procCtx, userID, transcription.Text, "")
+	if err != nil {
+		log.Printf("Error processing voice: %v", err)
+		reply = "❌ Error procesando la nota de voz."
+	}
 	sendMessage(ctx, b, update.Message.Chat.ID, reply)
 }
 

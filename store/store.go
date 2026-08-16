@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -90,6 +91,79 @@ ON CONFLICT (user_id) DO UPDATE SET
 // RevokeTokens elimina los tokens de un usuario (comando /revoke).
 func (s *TokenStore) RevokeTokens(ctx context.Context, userID int64) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM tokens WHERE user_id = $1`, userID)
+	return err
+}
+
+// ListUsers devuelve los user_ids que tienen tokens almacenados.
+func (s *TokenStore) ListUsers(ctx context.Context) ([]int64, error) {
+	rows, err := s.pool.Query(ctx, `SELECT user_id FROM tokens ORDER BY user_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	users := []int64{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		users = append(users, id)
+	}
+	return users, rows.Err()
+}
+
+// StoredMessage es la representación persistible de un mensaje de conversación.
+type StoredMessage struct {
+	Role       string            `json:"role"` // system, user, assistant, tool
+	Content    string            `json:"content,omitempty"`
+	ToolCallID string            `json:"tool_call_id,omitempty"`
+	ToolCalls  []json.RawMessage `json:"tool_calls,omitempty"`
+}
+
+// GetConversation devuelve el historial persistido de un usuario (sin el
+// system prompt; el orquestador lo regenera con la fecha actual).
+func (s *TokenStore) GetConversation(ctx context.Context, userID int64) ([]StoredMessage, error) {
+	var raw []byte
+	err := s.pool.QueryRow(ctx,
+		`SELECT history FROM conversations WHERE user_id = $1`, userID,
+	).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	msgs := []StoredMessage{}
+	if len(raw) == 0 {
+		return msgs, nil
+	}
+	if err := json.Unmarshal(raw, &msgs); err != nil {
+		return nil, err
+	}
+	return msgs, nil
+}
+
+// SaveConversation persiste el historial de un usuario (upsert).
+func (s *TokenStore) SaveConversation(ctx context.Context, userID int64, msgs []StoredMessage) error {
+	raw, err := json.Marshal(msgs)
+	if err != nil {
+		return err
+	}
+	_, err = s.pool.Exec(ctx, `
+INSERT INTO conversations (user_id, history, updated_at)
+VALUES ($1, $2::jsonb, now())
+ON CONFLICT (user_id) DO UPDATE SET
+	history    = EXCLUDED.history,
+	updated_at = now()`,
+		userID, raw)
+	return err
+}
+
+// DeleteConversation elimina el historial de un usuario.
+func (s *TokenStore) DeleteConversation(ctx context.Context, userID int64) error {
+	_, err := s.pool.Exec(ctx, `DELETE FROM conversations WHERE user_id = $1`, userID)
 	return err
 }
 

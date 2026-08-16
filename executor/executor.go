@@ -71,6 +71,8 @@ func (e *Executor) Execute(ctx context.Context, userID int64, name string, args 
 		return e.searchDriveFiles(ctx, userID, args)
 	case "get_drive_file":
 		return e.getDriveFile(ctx, userID, args)
+	case "get_weekly_summary":
+		return e.getWeeklySummary(ctx, userID, args)
 	default:
 		return nil, fmt.Errorf("tool %s no implementada", name)
 	}
@@ -854,14 +856,55 @@ func (e *Executor) getNote(ctx context.Context, userID int64, args json.RawMessa
 	}, nil
 }
 
-func getFolderID(folder string) string {
-	// Mapeo de carpetas a IDs de Drive (configurables)
-	folders := map[string]string{
-		"apuntes":    "FOLDER_APUNTES_ID",
-		"tareas":     "FOLDER_TAREAS_ID",
-		"documentos": "FOLDER_DOCUMENTOS_ID",
+func (e *Executor) getWeeklySummary(ctx context.Context, userID int64, args json.RawMessage) (map[string]interface{}, error) {
+	now := time.Now().In(bogotaTZ)
+	end := now.AddDate(0, 0, 7)
+
+	summary := map[string]interface{}{
+		"generated": now.Format(time.RFC3339),
 	}
-	if id, ok := folders[folder]; ok {
+
+	// Eventos de los próximos 7 días
+	if events, err := e.listCalendarEvents(ctx, userID, json.RawMessage(fmt.Sprintf(
+		`{"start_date": %q, "end_date": %q, "max_results": 50}`, now.Format(time.RFC3339), end.Format(time.RFC3339),
+	))); err == nil {
+		summary["events"] = events["events"]
+	}
+
+	// Tareas de los próximos 7 días (sin vencidas)
+	if tasks, err := e.listClassroomTasks(ctx, userID, json.RawMessage(fmt.Sprintf(
+		`{"include_overdue": false, "year": %d}`, end.Year(),
+	))); err == nil {
+		// Filtrar las que vencen dentro de 7 días
+		filtered := []map[string]string{}
+		for _, t := range tasks["tasks"].([]map[string]string) {
+			due, perr := time.Parse("2/1/2006", t["due"])
+			if perr != nil || !due.Before(end) {
+				continue
+			}
+			filtered = append(filtered, t)
+		}
+		summary["tasks"] = filtered
+	}
+
+	// Notas recientes
+	if e.notion != nil {
+		if notes, err := e.notion.Search(ctx, "", 5); err == nil {
+			summary["notes"] = notes
+		}
+	}
+
+	return summary, nil
+}
+
+func getFolderID(folder string) string {
+	// Mapeo de carpetas a IDs de Drive (configurables por env; fallback: root)
+	folders := map[string]string{
+		"apuntes":    config.Cfg.FolderApuntesID,
+		"tareas":     config.Cfg.FolderTareasID,
+		"documentos": config.Cfg.FolderDocumentosID,
+	}
+	if id, ok := folders[folder]; ok && id != "" {
 		return id
 	}
 	return "root"
