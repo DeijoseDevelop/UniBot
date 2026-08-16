@@ -6,7 +6,7 @@
 
 Gestiona tu vida académica mediante lenguaje natural: calendario, tareas, apuntes y fotos del pizarrón, todo en un solo chat.
 
-![Go](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat-square&logo=go&logoColor=white)
+![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat-square&logo=go&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)
 ![Telegram](https://img.shields.io/badge/Telegram-Bot_API_10.2-26A5E4?style=flat-square&logo=telegram&logoColor=white)
 ![Deploy](https://img.shields.io/badge/Deploy-Railway-131415?style=flat-square&logo=railway&logoColor=white)
@@ -90,7 +90,7 @@ Formatos de entrada: mensajes de texto, imágenes y notas de voz.
 
 ### Requisitos
 
-- Go 1.23+
+- Go 1.25+
 - Token de bot de Telegram (crear con [@BotFather](https://t.me/BotFather))
 - API key de [DeepSeek](https://platform.deepseek.com)
 - Proyecto Google Cloud con OAuth 2.0 (scopes: Calendar, Classroom, Drive, Vision)
