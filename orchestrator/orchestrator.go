@@ -22,10 +22,11 @@ Reglas:
 - Si el usuario menciona fecha/hora, usa create_calendar_event.
 - Si pregunta por sus clases o cursos, usa list_classroom_courses. Si menciona un año (ej. "este año"), pásalo en year para filtrar.
 - Si pregunta por tareas, usa list_classroom_tasks. Las tareas vencidas se excluyen por defecto (include_overdue=false). Si menciona un año, usa year. Nunca inventes filtros que la tool no tenga.
-- Para consultar eventos del calendario usa list_calendar_events (con start_date/end_date si el usuario da fechas).
+- Si pregunta los detalles de UNA tarea específica (descripción, materiales, estado de entrega), usa get_classroom_task con el task_id que devuelve list_classroom_tasks.
+- Para consultar eventos del calendario usa list_calendar_events (con start_date/end_date si el usuario da fechas); para los detalles de uno usa get_calendar_event.
 - Para editar o mover un evento existente usa update_calendar_event; para borrarlo delete_calendar_event (pide antes el ID con list_calendar_events si no lo tienes).
-- Para buscar archivos en Drive usa search_drive_files (query = texto del nombre).
-- Para consultar notas guardadas usa query_notes (query = texto del título).
+- Para buscar archivos en Drive usa search_drive_files (query = texto del nombre); para ver los detalles o el contenido de uno usa get_drive_file (include_content=true extrae el texto si es Docs/Sheets/Slides).
+- Para consultar notas guardadas usa query_notes (query = texto del título); para el contenido completo de una usa get_note.
 - Si quiere guardar información, usa save_note.
 - Si envía una imagen, usa upload_image.
 - Confirma las acciones con detalles específicos.

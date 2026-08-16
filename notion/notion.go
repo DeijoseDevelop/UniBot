@@ -184,6 +184,7 @@ func (s *Service) buildProperties(ctx context.Context, databaseID notionapi.Data
 
 // NoteRef es una referencia a una nota guardada (para consulta).
 type NoteRef struct {
+	ID      string   `json:"id,omitempty"`
 	Title   string   `json:"title"`
 	URL     string   `json:"url"`
 	Tags    []string `json:"tags,omitempty"`
@@ -212,9 +213,48 @@ func (s *Service) Search(ctx context.Context, query string, limit int) ([]NoteRe
 		if query != "" && !strings.Contains(strings.ToLower(title), query) {
 			continue
 		}
-		notes = append(notes, NoteRef{Title: title, URL: page.URL, Tags: tags, Content: content})
+		notes = append(notes, NoteRef{
+			ID:      string(page.ID),
+			Title:   title,
+			URL:     page.URL,
+			Tags:    tags,
+			Content: content,
+		})
 	}
 	return notes, nil
+}
+
+// Get obtiene el contenido completo de una nota por su ID de página,
+// incluyendo el texto de sus bloques.
+func (s *Service) Get(ctx context.Context, noteID string) (NoteRef, error) {
+	page, err := s.client.Page.Get(ctx, notionapi.PageID(noteID))
+	if err != nil {
+		return NoteRef{}, fmt.Errorf("notion: leer página: %w", err)
+	}
+
+	title, content, tags := pageNote(page)
+
+	// Concatenar el texto de los bloques de la página
+	resp, err := s.client.Block.GetChildren(ctx, notionapi.BlockID(noteID), nil)
+	if err == nil {
+		parts := []string{}
+		for _, b := range resp.Results {
+			if text := b.GetRichTextString(); text != "" && !strings.Contains(text, "No rich text of a basic block") {
+				parts = append(parts, text)
+			}
+		}
+		if len(parts) > 0 {
+			content = strings.Join(parts, "\n")
+		}
+	}
+
+	return NoteRef{
+		ID:      noteID,
+		Title:   title,
+		URL:     page.URL,
+		Tags:    tags,
+		Content: content,
+	}, nil
 }
 
 // pageNote extrae título, contenido y tags de una página de la base de notas.

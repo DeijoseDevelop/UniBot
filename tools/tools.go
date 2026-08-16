@@ -118,6 +118,64 @@ func AllTools() []ToolDefinition {
 		{
 			Type: "function",
 			Function: FunctionSchema{
+				Name:        "get_classroom_task",
+				Description: "Obtiene los detalles completos de una tarea de Google Classroom: descripción, estado, fecha límite, puntos, tema, materiales adjuntos y estado de entrega. Requiere task_id (y course_id si se conoce)",
+				Parameters: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"task_id": {"type": "string", "description": "ID de la tarea (task_id devuelto por list_classroom_tasks)"},
+						"course_id": {"type": "string", "description": "ID del curso (opcional si el task_id es globalmente único)"}
+					},
+					"required": ["task_id"]
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: FunctionSchema{
+				Name:        "get_calendar_event",
+				Description: "Obtiene los detalles completos de un evento del Google Calendar: descripción, ubicación, asistentes, estado. Requiere event_id",
+				Parameters: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"event_id": {"type": "string", "description": "ID del evento (event_id devuelto por list_calendar_events)"}
+					},
+					"required": ["event_id"]
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: FunctionSchema{
+				Name:        "get_drive_file",
+				Description: "Obtiene los detalles de un archivo de Google Drive: nombre, tipo, tamaño, fechas, enlace. Si include_content es true, devuelve también el texto del documento (solo Google Docs/Sheets/Slides)",
+				Parameters: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"file_id": {"type": "string", "description": "ID del archivo (id devuelto por search_drive_files o upload_image)"},
+						"include_content": {"type": "boolean", "default": false, "description": "Si true, extrae el texto del documento (Google Docs/Sheets/Slides)"}
+					},
+					"required": ["file_id"]
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: FunctionSchema{
+				Name:        "get_note",
+				Description: "Obtiene el contenido completo de una nota guardada en Notion (título, contenido y tags). Requiere note_id",
+				Parameters: json.RawMessage(`{
+					"type": "object",
+					"properties": {
+						"note_id": {"type": "string", "description": "ID de la nota (id devuelto por query_notes)"}
+					},
+					"required": ["note_id"]
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: FunctionSchema{
 				Name:        "search_drive_files",
 				Description: "Busca archivos en Google Drive del usuario por nombre. Filtros opcionales: query (texto en el nombre), folder (apuntes, tareas o documentos)",
 				Parameters: json.RawMessage(`{

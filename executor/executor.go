@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"unibot/notion"
 
 	"google.golang.org/api/calendar/v3"
+	"google.golang.org/api/classroom/v1"
 	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/vision/v1"
 )
@@ -45,6 +47,8 @@ func (e *Executor) Execute(ctx context.Context, userID int64, name string, args 
 		return e.createCalendarEvent(ctx, userID, args)
 	case "list_calendar_events":
 		return e.listCalendarEvents(ctx, userID, args)
+	case "get_calendar_event":
+		return e.getCalendarEvent(ctx, userID, args)
 	case "update_calendar_event":
 		return e.updateCalendarEvent(ctx, userID, args)
 	case "delete_calendar_event":
@@ -53,14 +57,20 @@ func (e *Executor) Execute(ctx context.Context, userID int64, name string, args 
 		return e.listClassroomCourses(ctx, userID, args)
 	case "list_classroom_tasks":
 		return e.listClassroomTasks(ctx, userID, args)
+	case "get_classroom_task":
+		return e.getClassroomTask(ctx, userID, args)
 	case "save_note":
 		return e.saveNote(ctx, userID, args)
 	case "query_notes":
 		return e.queryNotes(ctx, userID, args)
+	case "get_note":
+		return e.getNote(ctx, userID, args)
 	case "upload_image":
 		return e.uploadImage(ctx, userID, args)
 	case "search_drive_files":
 		return e.searchDriveFiles(ctx, userID, args)
+	case "get_drive_file":
+		return e.getDriveFile(ctx, userID, args)
 	default:
 		return nil, fmt.Errorf("tool %s no implementada", name)
 	}
@@ -206,10 +216,13 @@ func (e *Executor) listClassroomTasks(ctx context.Context, userID int64, args js
 				due = fmt.Sprintf("%d/%d/%d", w.DueDate.Day, w.DueDate.Month, w.DueDate.Year)
 			}
 			tasks = append(tasks, map[string]string{
-				"course": courseName,
-				"title":  w.Title,
-				"due":    due,
-				"link":   w.AlternateLink,
+				"course":    courseName,
+				"course_id": courseID,
+				"task_id":   w.Id,
+				"title":     w.Title,
+				"due":       due,
+				"state":     w.State,
+				"link":      w.AlternateLink,
 			})
 		}
 		return nil
@@ -576,6 +589,269 @@ func (e *Executor) searchDriveFiles(ctx context.Context, userID int64, args json
 
 func escapeQuery(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, "'", "\\'"), "\\", "\\\\")
+}
+
+func (e *Executor) getClassroomTask(ctx context.Context, userID int64, args json.RawMessage) (map[string]interface{}, error) {
+	var params struct {
+		TaskID   string `json:"task_id"`
+		CourseID string `json:"course_id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.TaskID == "" {
+		return nil, errors.New("task_id requerido")
+	}
+
+	ts := googleauth.NewAutoRefreshTokenSource(userID, config.Cfg.GoogleClientID, config.Cfg.GoogleClientSecret, e.tokenStore)
+	svc, err := ts.GetClassroomService(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var w *classroom.CourseWork
+	if params.CourseID != "" {
+		w, err = svc.Courses.CourseWork.Get(params.CourseID, params.TaskID).Context(ctx).Do()
+	} else {
+		// Buscar en todos los cursos si no se tiene course_id
+		courses, err2 := svc.Courses.List().StudentId("me").Context(ctx).Do()
+		if err2 != nil {
+			return nil, fmt.Errorf("classroom API error: %w", err2)
+		}
+		for _, course := range courses.Courses {
+			if w, err = svc.Courses.CourseWork.Get(course.Id, params.TaskID).Context(ctx).Do(); err == nil {
+				params.CourseID = course.Id
+				break
+			}
+		}
+		if w == nil {
+			return nil, errors.New("tarea no encontrada (task_id inválido)")
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("classroom API error: %w", err)
+	}
+
+	due := "Sin fecha"
+	if w.DueDate != nil {
+		due = fmt.Sprintf("%d/%d/%d", w.DueDate.Day, w.DueDate.Month, w.DueDate.Year)
+		if w.DueTime != nil {
+			due += fmt.Sprintf(" %02d:%02d", w.DueTime.Hours, w.DueTime.Minutes)
+		}
+	}
+
+	materials := []map[string]interface{}{}
+	for _, m := range w.Materials {
+		switch {
+		case m.Link != nil:
+			materials = append(materials, map[string]interface{}{"type": "link", "title": m.Link.Title, "url": m.Link.Url})
+		case m.DriveFile != nil && m.DriveFile.DriveFile != nil:
+			materials = append(materials, map[string]interface{}{
+				"type":  "drive_file",
+				"title": m.DriveFile.DriveFile.Title,
+				"url":   m.DriveFile.DriveFile.AlternateLink,
+			})
+		case m.YoutubeVideo != nil:
+			materials = append(materials, map[string]interface{}{
+				"type":  "youtube",
+				"title": m.YoutubeVideo.Title,
+				"url":   m.YoutubeVideo.AlternateLink,
+			})
+		case m.Form != nil:
+			materials = append(materials, map[string]interface{}{
+				"type":  "form",
+				"title": m.Form.Title,
+				"url":   m.Form.FormUrl,
+			})
+		}
+	}
+
+	// Estado de entrega: la lista de StudentSubmissions para el propio estudiante
+	submissionState := ""
+	submissions, err := svc.Courses.CourseWork.StudentSubmissions.List(params.CourseID, params.TaskID).Context(ctx).Do()
+	if err == nil && len(submissions.StudentSubmissions) > 0 {
+		submissionState = submissions.StudentSubmissions[0].State
+	}
+
+	return map[string]interface{}{
+		"task_id":          w.Id,
+		"course_id":        w.CourseId,
+		"title":            w.Title,
+		"description":      w.Description,
+		"state":            w.State,
+		"due":              due,
+		"max_points":       w.MaxPoints,
+		"topic_id":         w.TopicId,
+		"work_type":        w.WorkType,
+		"submission_state": submissionState,
+		"materials":        materials,
+		"link":             w.AlternateLink,
+	}, nil
+}
+
+func (e *Executor) getCalendarEvent(ctx context.Context, userID int64, args json.RawMessage) (map[string]interface{}, error) {
+	var params struct {
+		EventID string `json:"event_id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.EventID == "" {
+		return nil, errors.New("event_id requerido")
+	}
+
+	ts := googleauth.NewAutoRefreshTokenSource(userID, config.Cfg.GoogleClientID, config.Cfg.GoogleClientSecret, e.tokenStore)
+	svc, err := ts.GetCalendarService(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	ev, err := svc.Events.Get("primary", params.EventID).Context(ctx).Do()
+	if err != nil {
+		return nil, fmt.Errorf("calendar API error: %w", err)
+	}
+
+	start, end := "", ""
+	if ev.Start != nil {
+		start = ev.Start.DateTime
+		if start == "" {
+			start = ev.Start.Date
+		}
+	}
+	if ev.End != nil {
+		end = ev.End.DateTime
+		if end == "" {
+			end = ev.End.Date
+		}
+	}
+
+	attendees := []map[string]interface{}{}
+	for _, a := range ev.Attendees {
+		attendees = append(attendees, map[string]interface{}{
+			"email":           a.Email,
+			"display_name":    a.DisplayName,
+			"response_status": a.ResponseStatus,
+		})
+	}
+
+	return map[string]interface{}{
+		"event_id":    ev.Id,
+		"title":       ev.Summary,
+		"description": ev.Description,
+		"location":    ev.Location,
+		"status":      ev.Status,
+		"start":       start,
+		"end":         end,
+		"attendees":   attendees,
+		"link":        ev.HtmlLink,
+	}, nil
+}
+
+func (e *Executor) getDriveFile(ctx context.Context, userID int64, args json.RawMessage) (map[string]interface{}, error) {
+	var params struct {
+		FileID         string `json:"file_id"`
+		IncludeContent bool   `json:"include_content"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.FileID == "" {
+		return nil, errors.New("file_id requerido")
+	}
+
+	ts := googleauth.NewAutoRefreshTokenSource(userID, config.Cfg.GoogleClientID, config.Cfg.GoogleClientSecret, e.tokenStore)
+	svc, err := ts.GetDriveService(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	f, err := svc.Files.Get(params.FileID).
+		Fields("id,name,mimeType,size,createdTime,modifiedTime,description,webViewLink,webContentLink").
+		Context(ctx).Do()
+	if err != nil {
+		return nil, fmt.Errorf("drive API error: %w", err)
+	}
+
+	result := map[string]interface{}{
+		"file_id":       f.Id,
+		"name":          f.Name,
+		"mime_type":     f.MimeType,
+		"size_bytes":    f.Size,
+		"created_time":  f.CreatedTime,
+		"modified_time": f.ModifiedTime,
+		"description":   f.Description,
+		"link":          f.WebViewLink,
+		"download_link": f.WebContentLink,
+	}
+
+	if params.IncludeContent {
+		content, err := e.exportDriveText(ctx, svc, f.Id, f.MimeType)
+		if err != nil {
+			result["content_error"] = err.Error()
+		} else if content != "" {
+			result["content"] = content
+		}
+	}
+
+	return result, nil
+}
+
+func (e *Executor) exportDriveText(ctx context.Context, svc *drive.Service, fileID, mimeType string) (string, error) {
+	exportMIME := ""
+	switch {
+	case mimeType == "application/vnd.google-apps.document":
+		exportMIME = "text/plain"
+	case mimeType == "application/vnd.google-apps.sheet":
+		exportMIME = "text/csv"
+	case mimeType == "application/vnd.google-apps.slides":
+		exportMIME = "text/plain"
+	default:
+		return "", nil
+	}
+
+	resp, err := svc.Files.Export(fileID, exportMIME).Context(ctx).Download()
+	if err != nil {
+		return "", fmt.Errorf("export error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	content := string(data)
+	if len(content) > 4000 {
+		content = content[:4000] + "\n...[truncado]"
+	}
+	return content, nil
+}
+
+func (e *Executor) getNote(ctx context.Context, userID int64, args json.RawMessage) (map[string]interface{}, error) {
+	var params struct {
+		NoteID string `json:"note_id"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if params.NoteID == "" {
+		return nil, errors.New("note_id requerido")
+	}
+	if e.notion == nil {
+		return nil, errors.New("notion no configurado: NOTION_TOKEN requerido")
+	}
+
+	note, err := e.notion.Get(ctx, params.NoteID)
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]interface{}{
+		"note_id": params.NoteID,
+		"title":   note.Title,
+		"content": note.Content,
+		"tags":    note.Tags,
+		"url":     note.URL,
+	}, nil
 }
 
 func getFolderID(folder string) string {
