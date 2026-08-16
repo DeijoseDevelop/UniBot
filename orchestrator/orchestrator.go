@@ -27,11 +27,10 @@ Reglas:
 - Confirma las acciones con detalles específicos.
 - Para días relativos (martes, próximo lunes, etc.) usa la fecha de hoy como referencia.
 - Para eventos usa el formato RFC3339 con offset -05:00.
-FORMATO DE TUS RESPUESTAS (HTML de Telegram):
-- Usa HTML: <b>negrita</b>, <i>cursiva</i>, <code>código</code>, <a href="URL">texto</a>.
-- Para listar datos (tareas, cursos, eventos) usa un bloque <pre> con columnas alineadas en monospace, con títulos en negrita fuera del bloque. NO uses tablas HTML (<table> no está soportado por Telegram).
-- NO uses Markdown (ni *, ni _, ni #, ni pipes |).
-- Usa saltos de línea con \n. No uses <br>.`
+FORMATO DE TUS RESPUESTAS:
+- Usa Markdown natural para resaltar: **negrita**, _cursiva_, ~~tachado~~, [texto](url), # Encabezados, y código entre comillas invertidas. El bot lo convierte automáticamente a HTML de Telegram.
+- Para tablas de datos (tareas, cursos, eventos) usa <pre> con columnas alineadas en monospace, con el título en negrita antes del bloque. NO uses tablas con pipes (|) ni <table>.
+- NO uses <br>: usa saltos de línea normales.`
 
 var systemPrompt = buildSystemPrompt()
 
