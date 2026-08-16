@@ -84,10 +84,7 @@ Puedo ayudarte a:
 
 Solo escríbeme lo que necesites.`
 
-		b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: update.Message.Chat.ID,
-			Text:   msg,
-		})
+		sendMessage(ctx, b, update.Message.Chat.ID, msg)
 	}
 }
 
@@ -113,10 +110,7 @@ func defaultHandler(orch *orchestrator.Orchestrator) bot.HandlerFunc {
 
 		// Notas de voz: placeholder
 		if update.Message.Voice != nil {
-			b.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID: update.Message.Chat.ID,
-				Text:   "🎤 Nota de voz recibida. Transcripción de voz estará disponible próximamente.",
-			})
+			sendMessage(ctx, b, update.Message.Chat.ID, "🎤 Nota de voz recibida. Transcripción de voz estará disponible próximamente.")
 			return
 		}
 
@@ -132,10 +126,7 @@ func defaultHandler(orch *orchestrator.Orchestrator) bot.HandlerFunc {
 			reply = "❌ Lo siento, ocurrió un error procesando tu mensaje. Intenta de nuevo."
 		}
 
-		b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: update.Message.Chat.ID,
-			Text:   reply,
-		})
+		sendMessage(ctx, b, update.Message.Chat.ID, reply)
 	}
 }
 
@@ -148,20 +139,14 @@ func handlePhoto(ctx context.Context, b *bot.Bot, orch *orchestrator.Orchestrato
 	// Descargar la foto
 	file, err := b.GetFile(ctx, &bot.GetFileParams{FileID: photo.FileID})
 	if err != nil {
-		b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: update.Message.Chat.ID,
-			Text:   "❌ Error descargando la imagen.",
-		})
+		sendMessage(ctx, b, update.Message.Chat.ID, "❌ Error descargando la imagen.")
 		return
 	}
 
 	// Descargar contenido
 	data, err := downloadFile(ctx, b.FileDownloadLink(file))
 	if err != nil {
-		b.SendMessage(ctx, &bot.SendMessageParams{
-			ChatID: update.Message.Chat.ID,
-			Text:   "❌ Error descargando la imagen.",
-		})
+		sendMessage(ctx, b, update.Message.Chat.ID, "❌ Error descargando la imagen.")
 		return
 	}
 
@@ -180,10 +165,7 @@ func handlePhoto(ctx context.Context, b *bot.Bot, orch *orchestrator.Orchestrato
 		reply = "❌ Error procesando la imagen."
 	}
 
-	b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: update.Message.Chat.ID,
-		Text:   reply,
-	})
+	sendMessage(ctx, b, update.Message.Chat.ID, reply)
 }
 
 func downloadFile(ctx context.Context, url string) ([]byte, error) {
@@ -232,11 +214,7 @@ func (b *Bot) StartWebhookMode(ctx context.Context) {
 
 // SendToUser envía un mensaje directo a un usuario por su ID.
 func (b *Bot) SendToUser(ctx context.Context, userID int64, text string) error {
-	_, err := b.bot.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: userID,
-		Text:   text,
-	})
-	return err
+	return sendMessage(ctx, b.bot, userID, text)
 }
 
 // CompleteAuth procesa el callback de OAuth: intercambia el code, guarda el
@@ -280,7 +258,7 @@ func authHandler(authStates map[string]int64) bot.HandlerFunc {
 
 		msg := "🔐 Para conectar tu cuenta de Google:\n\n" +
 			url + "\n\nAbre el enlace, autoriza y vuelve aquí. Te confirmaré cuando esté listo."
-		b.SendMessage(ctx, &bot.SendMessageParams{ChatID: update.Message.Chat.ID, Text: msg})
+		sendMessage(ctx, b, update.Message.Chat.ID, msg)
 	}
 }
 
@@ -303,6 +281,6 @@ func revokeHandler(orch *orchestrator.Orchestrator, tokenStore googleauth.TokenS
 		orch.ClearHistory(userID)
 
 		msg := "🚫 Desconecté tu cuenta de Google y borré tu historial de conversación."
-		b.SendMessage(ctx, &bot.SendMessageParams{ChatID: update.Message.Chat.ID, Text: msg})
+		sendMessage(ctx, b, update.Message.Chat.ID, msg)
 	}
 }

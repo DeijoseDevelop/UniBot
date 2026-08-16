@@ -43,12 +43,23 @@ func AllTools() []ToolDefinition {
 		{
 			Type: "function",
 			Function: FunctionSchema{
+				Name:        "list_classroom_courses",
+				Description: "Lista los cursos de Google Classroom en los que el usuario está inscrito (nombre, id y sección)",
+				Parameters: json.RawMessage(`{
+					"type": "object",
+					"properties": {}
+				}`),
+			},
+		},
+		{
+			Type: "function",
+			Function: FunctionSchema{
 				Name:        "list_classroom_tasks",
-				Description: "Lista tareas pendientes de Google Classroom",
+				Description: "Lista las tareas pendientes de todos los cursos de Google Classroom del usuario. course_id es opcional: si se omite, consulta todos los cursos",
 				Parameters: json.RawMessage(`{
 					"type": "object",
 					"properties": {
-						"course_id": {"type": "string"}
+						"course_id": {"type": "string", "description": "ID del curso (opcional). Si se omite, lista las tareas de todos los cursos"}
 					}
 				}`),
 			},

@@ -33,6 +33,8 @@ func (e *Executor) Execute(ctx context.Context, userID int64, name string, args 
 	switch name {
 	case "create_calendar_event":
 		return e.createCalendarEvent(ctx, userID, args)
+	case "list_classroom_courses":
+		return e.listClassroomCourses(ctx, userID, args)
 	case "list_classroom_tasks":
 		return e.listClassroomTasks(ctx, userID, args)
 	case "save_note":
@@ -42,6 +44,33 @@ func (e *Executor) Execute(ctx context.Context, userID int64, name string, args 
 	default:
 		return nil, fmt.Errorf("tool %s no implementada", name)
 	}
+}
+
+func (e *Executor) listClassroomCourses(ctx context.Context, userID int64, args json.RawMessage) (map[string]interface{}, error) {
+	ts := googleauth.NewAutoRefreshTokenSource(userID, config.Cfg.GoogleClientID, config.Cfg.GoogleClientSecret, e.tokenStore)
+	svc, err := ts.GetClassroomService(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	courses, err := svc.Courses.List().StudentId("me").Context(ctx).Do()
+	if err != nil {
+		return nil, fmt.Errorf("classroom API error: %w", err)
+	}
+
+	result := []map[string]interface{}{}
+	for _, course := range courses.Courses {
+		result = append(result, map[string]interface{}{
+			"id":      course.Id,
+			"name":    course.Name,
+			"section": course.Section,
+		})
+	}
+
+	return map[string]interface{}{
+		"courses": result,
+		"count":   len(result),
+	}, nil
 }
 
 func (e *Executor) createCalendarEvent(ctx context.Context, userID int64, args json.RawMessage) (map[string]interface{}, error) {
@@ -91,22 +120,22 @@ func (e *Executor) createCalendarEvent(ctx context.Context, userID int64, args j
 }
 
 func (e *Executor) listClassroomTasks(ctx context.Context, userID int64, args json.RawMessage) (map[string]interface{}, error) {
+	var params struct {
+		CourseID string `json:"course_id"`
+	}
+	_ = json.Unmarshal(args, &params)
+
 	ts := googleauth.NewAutoRefreshTokenSource(userID, config.Cfg.GoogleClientID, config.Cfg.GoogleClientSecret, e.tokenStore)
 	svc, err := ts.GetClassroomService(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	courses, err := svc.Courses.List().StudentId("me").Context(ctx).Do()
-	if err != nil {
-		return nil, fmt.Errorf("classroom API error: %w", err)
-	}
-
 	tasks := []map[string]string{}
-	for _, course := range courses.Courses {
-		work, err := svc.Courses.CourseWork.List(course.Id).Context(ctx).Do()
+	appendCourse := func(courseID, courseName string) error {
+		work, err := svc.Courses.CourseWork.List(courseID).Context(ctx).Do()
 		if err != nil {
-			continue
+			return err
 		}
 		for _, w := range work.CourseWork {
 			due := "Sin fecha"
@@ -114,11 +143,32 @@ func (e *Executor) listClassroomTasks(ctx context.Context, userID int64, args js
 				due = fmt.Sprintf("%d/%d/%d", w.DueDate.Day, w.DueDate.Month, w.DueDate.Year)
 			}
 			tasks = append(tasks, map[string]string{
-				"course": course.Name,
+				"course": courseName,
 				"title":  w.Title,
 				"due":    due,
 				"link":   w.AlternateLink,
 			})
+		}
+		return nil
+	}
+
+	if params.CourseID != "" {
+		course, err := svc.Courses.Get(params.CourseID).Context(ctx).Do()
+		if err != nil {
+			return nil, fmt.Errorf("classroom API error: %w", err)
+		}
+		if err := appendCourse(course.Id, course.Name); err != nil {
+			return nil, fmt.Errorf("classroom API error: %w", err)
+		}
+	} else {
+		courses, err := svc.Courses.List().StudentId("me").Context(ctx).Do()
+		if err != nil {
+			return nil, fmt.Errorf("classroom API error: %w", err)
+		}
+		for _, course := range courses.Courses {
+			if err := appendCourse(course.Id, course.Name); err != nil {
+				continue
+			}
 		}
 	}
 
