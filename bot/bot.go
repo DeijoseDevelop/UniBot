@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,23 +11,33 @@ import (
 	"time"
 
 	"unibot/config"
+	"unibot/googleauth"
 	"unibot/orchestrator"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
+
+	"golang.org/x/oauth2"
 )
 
 // Bot encapsula el bot de Telegram y el orquestador
 type Bot struct {
 	bot          *bot.Bot
 	orchestrator *orchestrator.Orchestrator
+	tokenStore   googleauth.TokenStore
+	authStates   map[string]int64
+	redirectURL  string
 }
 
 // New crea e inicializa el bot de Telegram
-func New(orch *orchestrator.Orchestrator) (*Bot, error) {
+func New(orch *orchestrator.Orchestrator, tokenStore googleauth.TokenStore) (*Bot, error) {
+	authStates := map[string]int64{}
+
 	opts := []bot.Option{
 		bot.WithDefaultHandler(defaultHandler(orch)),
 		bot.WithMessageTextHandler("/start", bot.MatchTypeExact, startHandler()),
+		bot.WithMessageTextHandler("/auth", bot.MatchTypeExact, authHandler(authStates)),
+		bot.WithMessageTextHandler("/revoke", bot.MatchTypeExact, revokeHandler(orch, tokenStore)),
 	}
 
 	b, err := bot.New(config.Cfg.TelegramToken, opts...)
@@ -37,6 +48,9 @@ func New(orch *orchestrator.Orchestrator) (*Bot, error) {
 	return &Bot{
 		bot:          b,
 		orchestrator: orch,
+		tokenStore:   tokenStore,
+		authStates:   authStates,
+		redirectURL:  oauthRedirectURL(),
 	}, nil
 }
 
@@ -187,4 +201,101 @@ func downloadFile(ctx context.Context, url string) ([]byte, error) {
 		return nil, fmt.Errorf("download failed: %s", resp.Status)
 	}
 	return io.ReadAll(resp.Body)
+}
+
+// oauthRedirectURL devuelve la URI de redirección del flujo OAuth.
+func oauthRedirectURL() string {
+	if config.Cfg.GoogleRedirectURI != "" {
+		return config.Cfg.GoogleRedirectURI
+	}
+	if config.Cfg.WebhookURL != "" {
+		return config.Cfg.WebhookURL + "/oauth2callback"
+	}
+	return "http://localhost:" + config.Cfg.Port + "/oauth2callback"
+}
+
+// StartPolling inicia el bot en modo long-polling (desarrollo local).
+// Borra cualquier webhook previo para que polling funcione.
+func (b *Bot) StartPolling(ctx context.Context) {
+	if _, err := b.bot.DeleteWebhook(ctx, &bot.DeleteWebhookParams{}); err != nil {
+		log.Printf("Warning: failed to delete webhook: %v", err)
+	}
+	b.bot.Start(ctx)
+}
+
+// SendToUser envía un mensaje directo a un usuario por su ID.
+func (b *Bot) SendToUser(ctx context.Context, userID int64, text string) error {
+	_, err := b.bot.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: userID,
+		Text:   text,
+	})
+	return err
+}
+
+// CompleteAuth procesa el callback de OAuth: intercambia el code, guarda el
+// token en el TokenStore y devuelve el userID de Telegram asociado al state.
+func (b *Bot) CompleteAuth(ctx context.Context, state, code string) (int64, error) {
+	userID, ok := b.authStates[state]
+	if !ok {
+		return 0, errors.New("estado OAuth inválido o expirado")
+	}
+	delete(b.authStates, state)
+
+	if b.tokenStore == nil {
+		return 0, errors.New("TokenStore no disponible")
+	}
+
+	ts := googleauth.NewAutoRefreshTokenSource(userID, config.Cfg.GoogleClientID, config.Cfg.GoogleClientSecret, b.tokenStore)
+	tok, err := ts.Exchange(ctx, code)
+	if err != nil {
+		return 0, err
+	}
+
+	return userID, b.tokenStore.SaveTokens(ctx, userID, tok)
+}
+
+func authHandler(authStates map[string]int64) bot.HandlerFunc {
+	return func(ctx context.Context, b *bot.Bot, update *models.Update) {
+		if update.Message == nil {
+			return
+		}
+
+		userID := update.Message.From.ID
+		state := bot.RandomString(24)
+		authStates[state] = userID
+
+		cfg := googleauth.NewOAuthConfig(
+			config.Cfg.GoogleClientID,
+			config.Cfg.GoogleClientSecret,
+			oauthRedirectURL(),
+		)
+		url := cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
+
+		msg := "🔐 Para conectar tu cuenta de Google:\n\n" +
+			url + "\n\nAbre el enlace, autoriza y vuelve aquí. Te confirmaré cuando esté listo."
+		b.SendMessage(ctx, &bot.SendMessageParams{ChatID: update.Message.Chat.ID, Text: msg})
+	}
+}
+
+func revokeHandler(orch *orchestrator.Orchestrator, tokenStore googleauth.TokenStore) bot.HandlerFunc {
+	return func(ctx context.Context, b *bot.Bot, update *models.Update) {
+		if update.Message == nil {
+			return
+		}
+
+		userID := update.Message.From.ID
+		if tokenStore != nil {
+			if revoker, ok := tokenStore.(interface {
+				RevokeTokens(context.Context, int64) error
+			}); ok {
+				if err := revoker.RevokeTokens(ctx, userID); err != nil {
+					log.Printf("Error revoking tokens: %v", err)
+				}
+			}
+		}
+		orch.ClearHistory(userID)
+
+		msg := "🚫 Desconecté tu cuenta de Google y borré tu historial de conversación."
+		b.SendMessage(ctx, &bot.SendMessageParams{ChatID: update.Message.Chat.ID, Text: msg})
+	}
 }

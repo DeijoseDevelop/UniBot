@@ -32,6 +32,14 @@ Backend en **Go 1.23+** con binarios ultraligeros (~10-20 MB RAM en idle) y desp
 
 Formatos de entrada: mensajes de texto, imágenes y notas de voz.
 
+## 🎛️ Comandos del bot
+
+| Comando | Función |
+| --- | --- |
+| `/start` | Mensaje de bienvenida con las capacidades |
+| `/auth` | Conecta tu cuenta de Google (OAuth2) para Calendar/Classroom/Drive/Vision |
+| `/revoke` | Desconecta tu Google y borra tu historial |
+
 ## 🏗️ Arquitectura
 
 ```
@@ -63,13 +71,15 @@ Formatos de entrada: mensajes de texto, imágenes y notas de voz.
 ## 📁 Estructura del Proyecto
 
 ```
-├── main.go                  # Servidor Gin, webhook de Telegram, graceful shutdown
+├── main.go                  # Servidor Gin, webhook/polling, callback OAuth, graceful shutdown
 ├── config/                  # Carga de variables de entorno (godotenv)
 ├── tools/                   # Definición declarativa de tools (JSON Schema)
 ├── googleauth/              # OAuth2 con refresh automático (TokenSource)
 ├── executor/                # Ejecución de las tools sobre las APIs
 ├── orchestrator/            # Conversación con DeepSeek (function calling, 2 pasadas)
-├── bot/                     # Handlers de Telegram (texto, fotos, voz)
+├── bot/                     # Handlers de Telegram (texto, fotos, voz, /auth, /revoke)
+├── store/                   # TokenStore sobre PostgreSQL (Supabase, pgx)
+├── notion/                  # Servicio de Notion (save_note híbrido con auto-creación de DB)
 ├── Dockerfile               # Build multi-stage (golang:alpine → distroless)
 ├── docker-compose.yml       # Desarrollo local
 ├── railway.toml             # Configuración de deploy en Railway
@@ -102,6 +112,20 @@ go build -o unibot ./main.go
 
 Servidor en `http://localhost:8080` — healthcheck en `GET /health`.
 
+**Modos de operación:**
+
+- **Polling (desarrollo local):** deja `WEBHOOK_URL` vacío. El bot recibe updates por long-polling; ideal para probar desde tu Telegram sin dominio público.
+- **Webhook (producción/Railway):** define `WEBHOOK_URL`. El bot registra el webhook y Telegram entrega los updates al endpoint `/webhook`.
+
+### OAuth de Google (comando `/auth`)
+
+1. Envía `/auth` al bot → te da un enlace de autorización.
+2. Ábrelo, autoriza con tu cuenta de Google.
+3. El bot recibe el callback en `/oauth2callback` y guarda el refresh token en Supabase.
+4. Confirma con un mensaje ✅.
+
+> La URI de redirección debe estar registrada en tu OAuth client de Google Cloud: `http://localhost:8080/oauth2callback` (local) o `https://tu-proyecto.up.railway.app/oauth2callback` (producción). Configúrala con `GOOGLE_REDIRECT_URI`.
+
 ### Desarrollo local con Docker
 
 ```bash
@@ -133,8 +157,8 @@ docker compose up -d
 | Fase | Alcance |
 | --- | --- |
 | **1. Fundamentos** | Bot + DeepSeek conectado *(en curso)* |
-| **2. Integración Google** | OAuth2, Calendar, Classroom |
-| **3. Knowledge Base** | Supabase, Notion, Drive, OCR |
+| **2. Integración Google** | OAuth2 `/auth`, Calendar, Classroom *(en curso)* |
+| **3. Knowledge Base** | Supabase (hecho), Notion `save_note` (hecho), Drive, OCR |
 | **4. Inteligencia Avanzada** | RAG, Whisper, recordatorios automáticos |
 | **5. Producción** | Webhooks, monitoreo, dominio personalizado |
 

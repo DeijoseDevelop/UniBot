@@ -12,8 +12,9 @@ import (
 	"unibot/bot"
 	"unibot/config"
 	"unibot/executor"
-	"unibot/googleauth"
+	"unibot/notion"
 	"unibot/orchestrator"
+	"unibot/store"
 
 	"github.com/gin-gonic/gin"
 )
@@ -36,26 +37,68 @@ func main() {
 	})
 
 	// Inicializar componentes
-	// TODO: implementar TokenStore real con Supabase
-	var tokenStore googleauth.TokenStore // placeholder
-	exec := executor.New(tokenStore)
+	bootCtx, bootCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer bootCancel()
+
+	var tokenStore *store.TokenStore
+	if config.Cfg.SupabaseDatabaseURL != "" {
+		ts, err := store.New(bootCtx, config.Cfg.SupabaseDatabaseURL)
+		if err != nil {
+			log.Fatalf("Failed to connect to database: %v", err)
+		}
+		tokenStore = ts
+		defer tokenStore.Close()
+		log.Println("Database connected (Supabase/Postgres)")
+	} else {
+		log.Println("Warning: SUPABASE_DATABASE_URL no configurada — tools de Google deshabilitadas")
+	}
+
+	notionService := notion.New(config.Cfg.NotionToken, config.Cfg.NotionDBID, config.Cfg.NotionAnchorPageID)
+
+	exec := executor.New(tokenStore, notionService)
 	orch := orchestrator.New(exec)
 
 	// Crear bot de Telegram
-	tgBot, err := bot.New(orch)
+	tgBot, err := bot.New(orch, tokenStore)
 	if err != nil {
 		log.Fatalf("Failed to create telegram bot: %v", err)
 	}
 
-	// Configurar webhook
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := tgBot.SetWebhook(ctx); err != nil {
-		log.Printf("Warning: failed to set webhook: %v", err)
+	// Modo de operación: webhook (producción) o polling (desarrollo local)
+	if config.Cfg.WebhookURL != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := tgBot.SetWebhook(ctx); err != nil {
+			log.Printf("Warning: failed to set webhook: %v", err)
+		}
+		r.POST("/webhook", gin.WrapF(tgBot.WebhookHandler()))
+	} else {
+		log.Println("Running in polling mode (sin WEBHOOK_URL)")
+		go tgBot.StartPolling(context.Background())
 	}
 
-	// Registrar webhook handler
-	r.POST("/webhook", gin.WrapF(tgBot.WebhookHandler()))
+	// Callback de OAuth2 (flujo /auth)
+	r.GET("/oauth2callback", func(c *gin.Context) {
+		state := c.Query("state")
+		code := c.Query("code")
+		if code == "" || state == "" {
+			c.String(http.StatusBadRequest, "Parámetros inválidos en el callback OAuth.")
+			return
+		}
+
+		userID, err := tgBot.CompleteAuth(c.Request.Context(), state, code)
+		if err != nil {
+			c.String(http.StatusBadRequest, "Error de autenticación: %v", err)
+			return
+		}
+
+		c.String(http.StatusOK, "✅ ¡Cuenta de Google conectada! Ya puedes volver a Telegram.")
+		if err := tgBot.SendToUser(c.Request.Context(), userID,
+			"✅ ¡Tu cuenta de Google quedó conectada! Ya puedo usar Calendar, Classroom, Drive y Vision."); err != nil {
+			log.Printf("Failed to notify auth success: %v", err)
+		}
+	})
 
 	// Iniciar servidor
 	srv := &http.Server{

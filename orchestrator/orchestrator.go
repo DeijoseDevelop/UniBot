@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"unibot/config"
 	"unibot/executor"
@@ -14,14 +15,28 @@ import (
 	"github.com/openai/openai-go/shared/constant"
 )
 
-const systemPrompt = `Eres UniBot, un asistente universitario inteligente.
+const systemPromptTemplate = `Eres UniBot, un asistente universitario inteligente.
+Hoy es %s.
 Reglas:
 - Sé conciso pero amigable.
 - Si el usuario menciona fecha/hora, usa create_calendar_event.
 - Si pregunta por tareas, usa list_classroom_tasks.
 - Si quiere guardar información, usa save_note.
 - Si envía una imagen, usa upload_image.
-- Confirma las acciones con detalles específicos.`
+- Confirma las acciones con detalles específicos.
+- Para días relativos (martes, próximo lunes, etc.) usa la fecha de hoy como referencia.
+- Para eventos usa el formato RFC3339 con offset -05:00.`
+
+var systemPrompt = buildSystemPrompt()
+
+func buildSystemPrompt() string {
+	loc, err := time.LoadLocation("America/Bogota")
+	if err != nil {
+		loc = time.Local
+	}
+	today := time.Now().In(loc)
+	return fmt.Sprintf(systemPromptTemplate, today.Format("2 de January de 2006"))
+}
 
 // Orchestrator maneja la conversación con DeepSeek
 type Orchestrator struct {
@@ -35,6 +50,7 @@ func New(exec *executor.Executor) *Orchestrator {
 	client := openai.NewClient(
 		option.WithAPIKey(config.Cfg.DeepSeekAPIKey),
 		option.WithBaseURL("https://api.deepseek.com"),
+		option.WithJSONSet("thinking", map[string]string{"type": "disabled"}),
 	)
 	return &Orchestrator{
 		client:   client,

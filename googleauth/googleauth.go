@@ -16,8 +16,8 @@ import (
 
 // TokenStore define la interfaz para persistir tokens
 type TokenStore interface {
-	GetTokens(userID int64) (*oauth2.Token, error)
-	SaveTokens(userID int64, token *oauth2.Token) error
+	GetTokens(ctx context.Context, userID int64) (*oauth2.Token, error)
+	SaveTokens(ctx context.Context, userID int64, token *oauth2.Token) error
 }
 
 // AutoRefreshTokenSource implementa oauth2.TokenSource con refresh automático
@@ -28,19 +28,36 @@ type AutoRefreshTokenSource struct {
 	currentToken *oauth2.Token
 }
 
+// scopes devuelve los scopes mínimos necesarios de Google.
+func scopes() []string {
+	return []string{
+		calendar.CalendarScope,
+		classroom.ClassroomCoursesReadonlyScope,
+		classroom.ClassroomCourseworkMeReadonlyScope,
+		drive.DriveFileScope,
+		vision.CloudVisionScope,
+	}
+}
+
+// NewOAuthConfig construye la configuración OAuth2 para el flujo de
+// autorización (comando /auth).
+func NewOAuthConfig(clientID, clientSecret, redirectURL string) *oauth2.Config {
+	return &oauth2.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		RedirectURL:  redirectURL,
+		Endpoint:     google.Endpoint,
+		Scopes:       scopes(),
+	}
+}
+
 // NewAutoRefreshTokenSource crea un TokenSource que refresca automáticamente
 func NewAutoRefreshTokenSource(userID int64, clientID, clientSecret string, store TokenStore) *AutoRefreshTokenSource {
 	config := &oauth2.Config{
 		ClientID:     clientID,
 		ClientSecret: clientSecret,
 		Endpoint:     google.Endpoint,
-		Scopes: []string{
-			calendar.CalendarScope,
-			classroom.ClassroomCoursesReadonlyScope,
-			classroom.ClassroomCourseworkMeReadonlyScope,
-			drive.DriveFileScope,
-			vision.CloudVisionScope,
-		},
+		Scopes:       scopes(),
 	}
 	return &AutoRefreshTokenSource{
 		userID: userID,
@@ -49,10 +66,28 @@ func NewAutoRefreshTokenSource(userID int64, clientID, clientSecret string, stor
 	}
 }
 
+// AuthURL genera la URL de autorización OAuth2 para el usuario.
+func (a *AutoRefreshTokenSource) AuthURL(state string) string {
+	return a.config.AuthCodeURL(state, oauth2.AccessTypeOffline)
+}
+
+// Exchange intercambia el código de autorización por un token y lo persiste.
+func (a *AutoRefreshTokenSource) Exchange(ctx context.Context, code string) (*oauth2.Token, error) {
+	tok, err := a.config.Exchange(ctx, code)
+	if err != nil {
+		return nil, fmt.Errorf("oauth exchange failed: %w", err)
+	}
+	a.currentToken = tok
+	if err := a.store.SaveTokens(ctx, a.userID, tok); err != nil {
+		return nil, fmt.Errorf("save tokens failed: %w", err)
+	}
+	return tok, nil
+}
+
 // Token implementa oauth2.TokenSource
 func (a *AutoRefreshTokenSource) Token() (*oauth2.Token, error) {
 	if a.currentToken == nil {
-		tok, err := a.store.GetTokens(a.userID)
+		tok, err := a.store.GetTokens(context.Background(), a.userID)
 		if err != nil {
 			return nil, fmt.Errorf("token no encontrado: %w", err)
 		}
@@ -66,7 +101,7 @@ func (a *AutoRefreshTokenSource) Token() (*oauth2.Token, error) {
 			return nil, fmt.Errorf("refresh token failed: %w", err)
 		}
 		a.currentToken = newToken
-		if err := a.store.SaveTokens(a.userID, newToken); err != nil {
+		if err := a.store.SaveTokens(context.Background(), a.userID, newToken); err != nil {
 			return nil, fmt.Errorf("save refreshed token failed: %w", err)
 		}
 	}

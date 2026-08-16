@@ -5,11 +5,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"unibot/config"
 	"unibot/googleauth"
+	"unibot/notion"
 
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/drive/v3"
@@ -19,10 +21,11 @@ import (
 // Executor ejecuta las herramientas invocadas por el LLM
 type Executor struct {
 	tokenStore googleauth.TokenStore
+	notion     *notion.Service
 }
 
-func New(store googleauth.TokenStore) *Executor {
-	return &Executor{tokenStore: store}
+func New(store googleauth.TokenStore, notionService *notion.Service) *Executor {
+	return &Executor{tokenStore: store, notion: notionService}
 }
 
 // Execute despacha la ejecución según el nombre de la tool
@@ -126,9 +129,33 @@ func (e *Executor) listClassroomTasks(ctx context.Context, userID int64, args js
 }
 
 func (e *Executor) saveNote(ctx context.Context, userID int64, args json.RawMessage) (map[string]interface{}, error) {
-	// Implementación con Notion API
-	// Requiere notion-client de Go (github.com/jomei/notionapi)
-	return map[string]interface{}{"success": true, "saved_to": "Notion"}, nil
+	var params struct {
+		Title   string   `json:"title"`
+		Content string   `json:"content"`
+		Tags    []string `json:"tags"`
+	}
+	if err := json.Unmarshal(args, &params); err != nil {
+		return nil, err
+	}
+	if e.notion == nil {
+		return nil, errors.New("notion no configurado: NOTION_TOKEN requerido")
+	}
+
+	url, err := e.notion.Save(ctx, notion.Note{
+		Title:   params.Title,
+		Content: params.Content,
+		Tags:    params.Tags,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]interface{}{
+		"success":  true,
+		"saved_to": "Notion",
+		"link":     url,
+		"summary":  fmt.Sprintf("Nota guardada en Notion: %s", params.Title),
+	}, nil
 }
 
 func (e *Executor) uploadImage(ctx context.Context, userID int64, args json.RawMessage) (map[string]interface{}, error) {
