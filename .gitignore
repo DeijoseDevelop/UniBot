@@ -1,0 +1,21 @@
+# Binarios
+unibot
+*.exe
+
+# Entorno
+.env
+.env.local
+
+# Go
+*.test
+*.out
+coverage.*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# SO
+.DS_Store
+Thumbs.db
