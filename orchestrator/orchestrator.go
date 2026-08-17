@@ -3,8 +3,11 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"regexp"
+	"strings"
 	"time"
 
 	"unibot/config"
@@ -33,6 +36,7 @@ Reglas:
 - Si envía una imagen, usa upload_image.
 - Si pide un resumen de su semana (eventos, tareas y notas), usa get_weekly_summary.
 - Confirma las acciones con detalles específicos.
+- NUNCA escribas llamadas a herramientas como texto (ni <tool_calls> ni <invoke>): las herramientas se ejecutan automáticamente por el sistema.
 - Para días relativos (martes, próximo lunes, etc.) usa la fecha de hoy como referencia.
 - Para eventos usa el formato RFC3339 con offset -05:00.
 - Si la tool devuelve filtered_count mayor a 0, menciónalo (se descartaron N elementos con los filtros).
@@ -90,9 +94,12 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, userID int64, message
 		history = append(history, openai.SystemMessage(systemPrompt))
 		if o.store != nil {
 			if stored, err := o.store.GetConversation(ctx, userID); err == nil && len(stored) > 0 {
+				loaded := make([]openai.ChatCompletionMessageParamUnion, 0, len(stored))
 				for _, m := range stored {
-					history = append(history, fromStored(m))
+					loaded = append(loaded, fromStored(m))
 				}
+				// Eliminar tool messages huérfanos de historiales viejos
+				history = append(history, cleanToolSequence(loaded)...)
 			}
 		}
 	}
@@ -109,87 +116,71 @@ func (o *Orchestrator) ProcessMessage(ctx context.Context, userID int64, message
 		})
 	}
 	history = append(history, userMsg)
+	history = cleanToolSequence(history)
 
-	// Primera llamada a DeepSeek con tools
-	chatParams := openai.ChatCompletionNewParams{
-		Model:    "deepseek-v4-flash",
-		Messages: history,
-		Tools:    tools.ToOpenAITools(),
-	}
-
-	resp, err := o.client.Chat.Completions.New(ctx, chatParams)
-	if err != nil {
-		return "", fmt.Errorf("deepseek API error: %w", err)
-	}
-
-	msg := resp.Choices[0].Message
-
-	// Si no hay tool calls, responder directamente
-	if len(msg.ToolCalls) == 0 {
-		reply := msg.Content
-		history = append(history, openai.AssistantMessage(reply))
-		o.messages[userID] = history
-		o.persistHistory(ctx, userID, history)
-		return reply, nil
-	}
-
-	// Procesar tool calls
-	toolResults := make([]openai.ChatCompletionMessageToolCallParam, 0, len(msg.ToolCalls))
-	toolMessages := make([]openai.ChatCompletionMessageParamUnion, 0, len(msg.ToolCalls))
-
-	for _, tc := range msg.ToolCalls {
-		args := json.RawMessage(tc.Function.Arguments)
-		result, err := o.exec.Execute(ctx, userID, tc.Function.Name, args)
-
-		var resultJSON string
+	// Llamadas a DeepSeek en rondas: cada ronda puede devolver tool calls
+	// estructurados o en formato texto (Codex: <tool_calls><invoke>...).
+	for round := 0; round < 5; round++ {
+		params := openai.ChatCompletionNewParams{
+			Model:    "deepseek-v4-flash",
+			Messages: history,
+			Tools:    tools.ToOpenAITools(),
+		}
+		resp, err := o.client.Chat.Completions.New(ctx, params)
 		if err != nil {
-			resultJSON = fmt.Sprintf(`{"error": "%s"}`, err.Error())
-		} else {
-			b, _ := json.Marshal(result)
-			resultJSON = string(b)
+			return "", fmt.Errorf("deepseek API error: %w", err)
 		}
 
-		toolResults = append(toolResults, openai.ChatCompletionMessageToolCallParam{
-			ID:   tc.ID,
-			Type: constant.Function("function"),
-			Function: openai.ChatCompletionMessageToolCallFunctionParam{
-				Name:      tc.Function.Name,
-				Arguments: tc.Function.Arguments,
+		msg := resp.Choices[0].Message
+
+		// Recopilar tool calls (estructurados + inline en formato Codex)
+		calls := collectToolCalls(msg)
+		if len(calls) == 0 {
+			reply := msg.Content
+			history = append(history, openai.AssistantMessage(reply))
+			history = trimHistory(history)
+			o.messages[userID] = history
+			o.persistHistory(ctx, userID, history)
+			return reply, nil
+		}
+
+		// Ejecutar las tools y construir los mensajes de resultado
+		toolResults := make([]openai.ChatCompletionMessageToolCallParam, 0, len(calls))
+		toolMessages := make([]openai.ChatCompletionMessageParamUnion, 0, len(calls))
+
+		for _, c := range calls {
+			result, err := o.exec.Execute(ctx, userID, c.name, json.RawMessage(c.args))
+
+			var resultJSON string
+			if err != nil {
+				resultJSON = fmt.Sprintf(`{"error": "%s"}`, err.Error())
+			} else {
+				b, _ := json.Marshal(result)
+				resultJSON = string(b)
+			}
+
+			toolResults = append(toolResults, openai.ChatCompletionMessageToolCallParam{
+				ID:   c.id,
+				Type: constant.Function("function"),
+				Function: openai.ChatCompletionMessageToolCallFunctionParam{
+					Name:      c.name,
+					Arguments: c.args,
+				},
+			})
+			toolMessages = append(toolMessages, openai.ToolMessage(resultJSON, c.id))
+		}
+
+		// El mensaje del assistant se reconstruye con las tool calls reales
+		// (se descarta el XML inline que el modelo pudo escribir en content)
+		history = append(history, openai.ChatCompletionMessageParamUnion{
+			OfAssistant: &openai.ChatCompletionAssistantMessageParam{
+				ToolCalls: toolResults,
 			},
 		})
-
-		toolMessages = append(toolMessages, openai.ToolMessage(resultJSON, tc.ID))
+		history = append(history, toolMessages...)
 	}
 
-	// Segunda llamada con resultados de tools
-	finalHistory := append(history, openai.ChatCompletionMessageParamUnion{
-		OfAssistant: &openai.ChatCompletionAssistantMessageParam{
-			ToolCalls: toolResults,
-		},
-	})
-	finalHistory = append(finalHistory, toolMessages...)
-
-	finalParams := openai.ChatCompletionNewParams{
-		Model:    "deepseek-v4-flash",
-		Messages: finalHistory,
-	}
-
-	finalResp, err := o.client.Chat.Completions.New(ctx, finalParams)
-	if err != nil {
-		return "", fmt.Errorf("deepseek final call error: %w", err)
-	}
-
-	reply := finalResp.Choices[0].Message.Content
-	finalHistory = append(finalHistory, openai.AssistantMessage(reply))
-
-	// Limitar historial a últimos 20 mensajes para no exceder contexto
-	if len(finalHistory) > 22 { // system + 20 mensajes
-		finalHistory = append([]openai.ChatCompletionMessageParamUnion{finalHistory[0]}, finalHistory[len(finalHistory)-20:]...)
-	}
-	o.messages[userID] = finalHistory
-	o.persistHistory(ctx, userID, finalHistory)
-
-	return reply, nil
+	return "", errors.New("demasiadas rondas de tool calls")
 }
 
 // persistHistory guarda el historial (sin el system prompt) en el store.
@@ -215,6 +206,99 @@ func (o *Orchestrator) ClearHistory(userID int64) {
 	if o.store != nil {
 		_ = o.store.DeleteConversation(context.Background(), userID)
 	}
+}
+
+// toolCall representa una llamada a tool pendiente de ejecutar.
+type toolCall struct {
+	id   string
+	name string
+	args string
+}
+
+// collectToolCalls recopila las tool calls de un mensaje del modelo:
+// las estructuradas (msg.ToolCalls) y las inline en formato Codex que
+// DeepSeek a veces escribe como texto (<tool_calls><invoke name="...">).
+func collectToolCalls(msg openai.ChatCompletionMessage) []toolCall {
+	calls := []toolCall{}
+	for _, tc := range msg.ToolCalls {
+		calls = append(calls, toolCall{id: tc.ID, name: tc.Function.Name, args: tc.Function.Arguments})
+	}
+	if len(msg.ToolCalls) == 0 {
+		for _, ic := range extractInlineToolCalls(msg.Content) {
+			calls = append(calls, toolCall{id: ic.id, name: ic.name, args: ic.args})
+		}
+	}
+	return calls
+}
+
+type inlineToolCall struct {
+	id   string
+	name string
+	args string
+}
+
+var invokeRe = regexp.MustCompile(`(?s)<invoke\s+name="([^"]+)"\s*>(.*?)</invoke>`)
+var parameterRe = regexp.MustCompile(`(?s)<parameter\s+name="([^"]+)"\s*>(.*?)</parameter>`)
+
+// extractInlineToolCalls parsea las tool calls en formato Codex:
+//
+//	<tool_calls>
+//	<invoke name="create_calendar_event">
+//	<parameter name="title">Parcial</parameter>
+//	...
+//	</invoke>
+//	</tool_calls>
+func extractInlineToolCalls(content string) []inlineToolCall {
+	matches := invokeRe.FindAllStringSubmatch(content, -1)
+	calls := make([]inlineToolCall, 0, len(matches))
+	for i, m := range matches {
+		params := map[string]interface{}{}
+		for _, p := range parameterRe.FindAllStringSubmatch(m[2], -1) {
+			val := strings.TrimSpace(p[2])
+			var parsed interface{}
+			if err := json.Unmarshal([]byte(val), &parsed); err == nil {
+				params[p[1]] = parsed
+			} else {
+				params[p[1]] = val
+			}
+		}
+		args, _ := json.Marshal(params)
+		calls = append(calls, inlineToolCall{
+			id:   fmt.Sprintf("call_inline_%d", i),
+			name: m[1],
+			args: string(args),
+		})
+	}
+	return calls
+}
+
+// cleanToolSequence elimina los mensajes con rol tool que no tienen un
+// mensaje assistant con tool_calls inmediatamente anterior (tool huérfanos).
+func cleanToolSequence(msgs []openai.ChatCompletionMessageParamUnion) []openai.ChatCompletionMessageParamUnion {
+	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(msgs))
+	allowTool := false
+	for _, m := range msgs {
+		if m.OfTool != nil {
+			if allowTool {
+				out = append(out, m)
+			}
+			continue
+		}
+		allowTool = m.OfAssistant != nil && len(m.OfAssistant.ToolCalls) > 0
+		out = append(out, m)
+	}
+	return out
+}
+
+// trimHistory limita el historial a los últimos 20 mensajes sin cortar a
+// mitad de una ronda de tools (evita tool messages huérfanos).
+func trimHistory(history []openai.ChatCompletionMessageParamUnion) []openai.ChatCompletionMessageParamUnion {
+	const maxMsgs = 22 // system + 21
+	if len(history) <= maxMsgs {
+		return history
+	}
+	trimmed := append([]openai.ChatCompletionMessageParamUnion{history[0]}, history[len(history)-maxMsgs+1:]...)
+	return cleanToolSequence(trimmed)
 }
 
 // toStored convierte un mensaje de la API en su representación persistible.
@@ -263,12 +347,12 @@ func fromStored(m store.StoredMessage) openai.ChatCompletionMessageParamUnion {
 				toolCalls = append(toolCalls, tc)
 			}
 		}
-		return openai.ChatCompletionMessageParamUnion{
-			OfAssistant: &openai.ChatCompletionAssistantMessageParam{
-				Content:   openai.ChatCompletionAssistantMessageParamContentUnion{OfString: openai.String(m.Content)},
-				ToolCalls: toolCalls,
-			},
+		// El content de un assistant con tool_calls debe ir como null, no "".
+		asm := &openai.ChatCompletionAssistantMessageParam{ToolCalls: toolCalls}
+		if m.Content != "" {
+			asm.Content = openai.ChatCompletionAssistantMessageParamContentUnion{OfString: openai.String(m.Content)}
 		}
+		return openai.ChatCompletionMessageParamUnion{OfAssistant: asm}
 	}
 	return openai.SystemMessage(m.Content)
 }
