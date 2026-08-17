@@ -127,17 +127,9 @@ func (e *Executor) createCalendarEvent(ctx context.Context, userID int64, args j
 		Date            string `json:"date"`
 		Description     string `json:"description"`
 		DurationMinutes int    `json:"duration_minutes"`
+		EndDate         string `json:"end_date"`
 	}
 	if err := json.Unmarshal(args, &params); err != nil {
-		return nil, err
-	}
-	if params.DurationMinutes == 0 {
-		params.DurationMinutes = 60
-	}
-
-	ts := googleauth.NewAutoRefreshTokenSource(userID, config.Cfg.GoogleClientID, config.Cfg.GoogleClientSecret, e.tokenStore)
-	svc, err := ts.GetCalendarService(ctx)
-	if err != nil {
 		return nil, err
 	}
 
@@ -145,7 +137,23 @@ func (e *Executor) createCalendarEvent(ctx context.Context, userID int64, args j
 	if err != nil {
 		return nil, fmt.Errorf("fecha inválida: %w", err)
 	}
-	end := start.Add(time.Duration(params.DurationMinutes) * time.Minute)
+
+	duration := time.Duration(params.DurationMinutes) * time.Minute
+	if params.EndDate != "" {
+		if end, err := time.Parse(time.RFC3339, params.EndDate); err == nil && end.After(start) {
+			duration = end.Sub(start)
+		}
+	}
+	if duration <= 0 {
+		duration = 60 * time.Minute
+	}
+	end := start.Add(duration)
+
+	ts := googleauth.NewAutoRefreshTokenSource(userID, config.Cfg.GoogleClientID, config.Cfg.GoogleClientSecret, e.tokenStore)
+	svc, err := ts.GetCalendarService(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	event := &calendar.Event{
 		Summary:     params.Title,

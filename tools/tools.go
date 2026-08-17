@@ -32,9 +32,10 @@ func AllTools() []ToolDefinition {
 					"type": "object",
 					"properties": {
 						"title": {"type": "string"},
-						"date": {"type": "string", "format": "date-time"},
+						"date": {"type": "string", "format": "date-time", "description": "Fecha/hora de inicio (RFC3339)"},
 						"description": {"type": "string"},
-						"duration_minutes": {"type": "integer", "default": 60}
+						"duration_minutes": {"type": "integer", "default": 60, "description": "Duración en minutos (opcional si se da end_date)"},
+						"end_date": {"type": "string", "format": "date-time", "description": "Fecha/hora de fin (opcional; si se da, define la duración)"}
 					},
 					"required": ["title", "date"]
 				}`),

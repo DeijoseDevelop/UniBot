@@ -324,6 +324,14 @@ func (b *Bot) CompleteAuth(ctx context.Context, state, code string) (int64, erro
 		return 0, err
 	}
 
+	// Defensa: si el exchange no devuelve refresh_token (Google lo omite en
+	// re-autorizaciones sin consentimiento), conservar el refresh anterior.
+	if tok.RefreshToken == "" {
+		if prev, err := b.tokenStore.GetTokens(ctx, userID); err == nil && prev.RefreshToken != "" {
+			tok.RefreshToken = prev.RefreshToken
+		}
+	}
+
 	return userID, b.tokenStore.SaveTokens(ctx, userID, tok)
 }
 
@@ -342,7 +350,9 @@ func authHandler(authStates map[string]int64) bot.HandlerFunc {
 			config.Cfg.GoogleClientSecret,
 			oauthRedirectURL(),
 		)
-		url := cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
+		// ApprovalForce fuerza la pantalla de consentimiento en cada /auth:
+		// si Google la omite, no devuelve refresh_token nuevo y se perdería el bueno.
+		url := cfg.AuthCodeURL(state, oauth2.AccessTypeOffline, oauth2.ApprovalForce)
 
 		msg := "🔐 Para conectar tu cuenta de Google:\n\n" +
 			url + "\n\nAbre el enlace, autoriza y vuelve aquí. Te confirmaré cuando esté listo."
